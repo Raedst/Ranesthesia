@@ -1,10 +1,4 @@
-import OpenAI from "openai";
-
 export const runtime = "nodejs";
-
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
 
 const system = {
   role: "system",
@@ -24,17 +18,11 @@ Rigor & uncertainty:
 - If critical context is missing (age, weight, pregnancy, renal/hepatic function, anticoagulants, allergies, urgency, comorbidities), ask 1–3 targeted clarifying questions BEFORE answering.
 
 Multiple viewpoints:
-- When reputable references differ, present 2 or more viewpoints (Approach A / Approach B) and explain when each is used.
+- When reputable references differ, present 2+ viewpoints (Approach A / Approach B) and explain when each is used.
 
 Citations policy:
 - Do NOT invent page numbers.
 - Suggest where to verify using book title + edition + chapter/topic.
-- Acceptable sources include:
-  * Miller’s Anesthesia (10th ed)
-  * Morgan & Mikhail’s Clinical Anesthesiology (7th ed)
-  * Barash, Cullen, and Stoelting’s Clinical Anesthesia (9th ed)
-  * Stoelting’s Anesthesia and Co-Existing Disease (8th ed)
-  * Reputable online references (e.g., UpToDate) when appropriate
 
 Safety:
 - No patient identifiers.
@@ -58,47 +46,54 @@ MANDATORY ANSWER FORMAT (must always be followed exactly):
 === REFERENCES TO VERIFY ===
 - List reference books with edition + chapter/topic
 
-If this format is not followed, you must regenerate the answer in the correct format.
+If this format is not followed, regenerate in the correct format.
 `,
 };
 
 export async function POST(req) {
   try {
+    const { messages } = await req.json();
+
     if (!process.env.OPENAI_API_KEY) {
       return new Response(
-        JSON.stringify({ error: "OPENAI_API_KEY is not configured" }),
-        { status: 500 }
+        JSON.stringify({ reply: "❌ Missing OPENAI_API_KEY" }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
       );
     }
 
-    const body = await req.json();
-    const userMessages = body.messages || [];
-
-    const response = await client.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [system, ...userMessages],
-      temperature: 0.2,
-      max_tokens: 800,
+    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [system, ...(messages || [])],
+        temperature: 0.2,
+        max_tokens: 900,
+      }),
     });
 
-    const output = response.choices?.[0]?.message?.content;
+    const data = await r.json();
 
-    if (!output) {
+    if (!r.ok) {
       return new Response(
-        JSON.stringify({ error: "Empty model output" }),
-        { status: 500 }
+        JSON.stringify({ reply: `❌ OpenAI error: ${data?.error?.message || "Unknown error"}` }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
       );
     }
 
-    return new Response(JSON.stringify({ text: output }), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    });
-  } catch (error) {
-    console.error("Chat API error:", error);
+    const reply = data?.choices?.[0]?.message?.content?.trim() || "";
+
     return new Response(
-      JSON.stringify({ error: "Internal server error" }),
-      { status: 500 }
+      JSON.stringify({ reply: reply || "⚠️ Empty model output." }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    );
+  } catch (e) {
+    return new Response(
+      JSON.stringify({ reply: `❌ Server error: ${e?.message || e}` }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
     );
   }
 }
