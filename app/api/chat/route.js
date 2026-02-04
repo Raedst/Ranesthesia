@@ -1,14 +1,36 @@
 export const runtime = "nodejs";
 
+function extractText(data) {
+  // 1) Best case: convenience field
+  if (typeof data?.output_text === "string" && data.output_text.trim()) {
+    return data.output_text.trim();
+  }
+
+  // 2) Common case: output array with content blocks
+  const output = Array.isArray(data?.output) ? data.output : [];
+  for (const item of output) {
+    const content = Array.isArray(item?.content) ? item.content : [];
+    for (const block of content) {
+      // Some responses use {type:"output_text", text:"..."}
+      if (typeof block?.text === "string" && block.text.trim()) return block.text.trim();
+      // Some use nested shapes
+      if (typeof block?.value === "string" && block.value.trim()) return block.value.trim();
+    }
+  }
+
+  // 3) Fallback: look for any string fields that might contain text
+  // (kept minimal; if nothing found, return empty)
+  return "";
+}
+
 export async function POST(req) {
   try {
     const { messages } = await req.json();
 
     if (!process.env.OPENAI_API_KEY) {
-      return new Response(JSON.stringify({ reply: "❌ OPENAI_API_KEY is missing (Vercel env var)." }), { status: 200 });
+      return new Response(JSON.stringify({ reply: "❌ OPENAI_API_KEY missing" }), { status: 200 });
     }
 
-    // Responses API expects input as either a string or an array of items/messages
     const r = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: {
@@ -17,17 +39,18 @@ export async function POST(req) {
       },
       body: JSON.stringify({
         model: "gpt-4o-mini",
+        // Use the recommended content-block format (most reliable)
         input: (messages || []).map((m) => ({
           role: m.role,
-          content: m.content, // keep it simple: plain string
+          content: [{ type: "input_text", text: String(m.content || "") }],
         })),
         temperature: 0.2,
+        max_output_tokens: 300,
       }),
     });
 
     const data = await r.json();
 
-    // If OpenAI returns an error, show it in the UI
     if (!r.ok) {
       return new Response(
         JSON.stringify({ reply: `❌ OpenAI error: ${data?.error?.message || JSON.stringify(data)}` }),
@@ -35,13 +58,23 @@ export async function POST(req) {
       );
     }
 
-    // Responses API gives a convenience field: output_text
-    const reply = data?.output_text;
+    const reply = extractText(data);
 
-    return new Response(
-      JSON.stringify({ reply: reply && reply.trim() ? reply : "⚠️ Empty model output (no text returned)." }),
-      { status: 200 }
-    );
+    // If still empty, return a debug-friendly message (no secrets)
+    if (!reply) {
+      return new Response(
+        JSON.stringify({
+          reply: "⚠️ Empty model output. Try again. If it repeats, your project may be blocked by model/output settings.",
+          debug: {
+            has_output_text: typeof data?.output_text === "string",
+            output_len: Array.isArray(data?.output) ? data.output.length : 0,
+          },
+        }),
+        { status: 200 }
+      );
+    }
+
+    return new Response(JSON.stringify({ reply }), { status: 200 });
   } catch (e) {
     return new Response(JSON.stringify({ reply: `❌ Server error: ${e?.message || e}` }), { status: 200 });
   }
